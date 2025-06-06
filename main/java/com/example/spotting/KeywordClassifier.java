@@ -2,223 +2,222 @@ package com.example.spotting;
 
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
+import android.util.Log;
 import org.tensorflow.lite.Interpreter;
 import java.io.FileInputStream;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Arrays;
 
 public class KeywordClassifier {
+    private static final String TAG = "KeywordClassifier";
+    private static final String MODEL_PATH = "speech_commands.tflite";
 
-    // Nome del file del modello TensorFlow Lite (da inserire nella cartella assets)
-    private static final String MODEL_FILENAME = "speech_commands.tflite";
-
-    // Labels per il modello Speech Commands specifico
-    // 10 comandi vocali riconosciuti dal modello
-    private static final String[] LABELS = ModelConfig.VOICE_COMMANDS;
-
-    private static final float CONFIDENCE_THRESHOLD = ModelConfig.CONFIDENCE_THRESHOLD;
-
-    private Interpreter tfliteInterpreter;
-    private Context context;
-
-    // Buffer per input e output del modello
-    private ByteBuffer inputBuffer;
-    private float[][] outputBuffer;
-
-    // Dimensioni del modello
+    private Interpreter tflite;
     private int inputSize;
     private int outputSize;
+    private boolean isInitialized = false;
 
-    public KeywordClassifier(Context context) throws IOException {
-        this.context = context;
-        initializeModel();
+    // Labels per il modello Google Speech Commands v2
+    private static final String[] LABELS = {
+            "silence",    // 0
+            "unknown",    // 1
+            "yes",        // 2
+            "no",         // 3
+            "up",         // 4
+            "down",       // 5
+            "left",       // 6
+            "right",      // 7
+            "on",         // 8
+            "off",        // 9
+            "stop",       // 10
+            "go"          // 11
+    };
+
+    public KeywordClassifier(Context context) {
+        try {
+            // Carica il modello
+            MappedByteBuffer tfliteModel = loadModelFile(context);
+
+            // Configura l'interprete
+            Interpreter.Options options = new Interpreter.Options();
+            options.setNumThreads(2);
+
+            tflite = new Interpreter(tfliteModel, options);
+
+            // Ottieni le dimensioni del modello
+            int[] inputShape = tflite.getInputTensor(0).shape();
+            int[] outputShape = tflite.getOutputTensor(0).shape();
+
+            Log.d(TAG, "Input shape: " + Arrays.toString(inputShape));
+            Log.d(TAG, "Output shape: " + Arrays.toString(outputShape));
+
+            // Per il modello Google Speech Commands, l'input dovrebbe essere [1, 16000]
+            if (inputShape.length >= 2) {
+                inputSize = inputShape[1]; // Seconda dimensione
+            } else {
+                inputSize = inputShape[0]; // Prima dimensione se è 1D
+            }
+
+            if (outputShape.length >= 2) {
+                outputSize = outputShape[1]; // Seconda dimensione
+            } else {
+                outputSize = outputShape[0]; // Prima dimensione se è 1D
+            }
+
+            Log.d(TAG, "Configurazione modello:");
+            Log.d(TAG, "- Input size: " + inputSize);
+            Log.d(TAG, "- Output size: " + outputSize);
+            Log.d(TAG, "- Classi supportate: " + LABELS.length);
+
+            // Verifica che le dimensioni siano corrette
+            if (inputSize != 16000) {
+                Log.w(TAG, "⚠️ ATTENZIONE: Input size non standard: " + inputSize + " (atteso: 16000)");
+                Log.w(TAG, "Il modello potrebbe richiedere preprocessing diverso");
+            }
+
+            if (outputSize != LABELS.length) {
+                Log.w(TAG, "⚠️ ATTENZIONE: Output size non corrisponde alle label: " + outputSize + " vs " + LABELS.length);
+            }
+
+            isInitialized = true;
+            Log.d(TAG, "✅ KeywordClassifier inizializzato correttamente");
+
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Errore nell'inizializzazione del KeywordClassifier", e);
+            isInitialized = false;
+        }
     }
 
-    private void initializeModel() throws IOException {
-        // Carica il modello TensorFlow Lite
-        MappedByteBuffer modelBuffer = loadModelFile();
-
-        // Configura l'interprete
-        Interpreter.Options options = new Interpreter.Options();
-        options.setNumThreads(4); // Usa 4 thread per performance migliori
-
-        tfliteInterpreter = new Interpreter(modelBuffer, options);
-
-        // Ottieni le dimensioni di input e output
-        int[] inputShape = tfliteInterpreter.getInputTensor(0).shape();
-        int[] outputShape = tfliteInterpreter.getOutputTensor(0).shape();
-
-        inputSize = getShapeSize(inputShape);
-        outputSize = getShapeSize(outputShape);
-
-        // Inizializza i buffer
-        inputBuffer = ByteBuffer.allocateDirect(inputSize * 4); // 4 byte per float
-        inputBuffer.order(ByteOrder.nativeOrder());
-
-        outputBuffer = new float[1][outputSize]; // Batch size = 1
-
-        System.out.println("Modello TensorFlow Lite caricato:");
-        System.out.println("Input shape: " + java.util.Arrays.toString(inputShape));
-        System.out.println("Output shape: " + java.util.Arrays.toString(outputShape));
-        System.out.println("Input size: " + inputSize);
-        System.out.println("Output size: " + outputSize);
-    }
-
-    private MappedByteBuffer loadModelFile() throws IOException {
-        AssetFileDescriptor fileDescriptor = context.getAssets().openFd(MODEL_FILENAME);
+    private MappedByteBuffer loadModelFile(Context context) throws Exception {
+        AssetFileDescriptor fileDescriptor = context.getAssets().openFd(MODEL_PATH);
         FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
-        FileChannel fileChannel = inputStream.getChannel();
+        FileChannel fileChannel = inputStream.getChannel(); // FIX: Usa getChannel() invece di getFileChannel()
         long startOffset = fileDescriptor.getStartOffset();
         long declaredLength = fileDescriptor.getDeclaredLength();
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+        MappedByteBuffer buffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+        inputStream.close();
+        return buffer;
     }
 
-    private int getShapeSize(int[] shape) {
-        int size = 1;
-        for (int dim : shape) {
-            size *= dim;
-        }
-        return size;
-    }
-
-    public String classify(float[] audioFeatures) {
-        if (tfliteInterpreter == null) {
-            return "Errore: modello non caricato";
+    public String classify(float[] audioData) {
+        if (!isInitialized || tflite == null) {
+            Log.e(TAG, "❌ Classificatore non inizializzato");
+            return null;
         }
 
-        if (audioFeatures == null || audioFeatures.length == 0) {
-            return "Errore: dati audio vuoti";
+        if (audioData == null) {
+            Log.e(TAG, "❌ Audio data è null");
+            return null;
         }
 
         try {
-            // Prepara l'input
-            prepareInputBuffer(audioFeatures);
+            // Adatta i dati audio alla dimensione richiesta dal modello
+            float[] inputData = prepareInput(audioData);
+
+            if (inputData == null) {
+                Log.e(TAG, "❌ Errore nella preparazione dell'input");
+                return null;
+            }
+
+            // Prepara l'output
+            float[][] output = new float[1][outputSize];
 
             // Esegui l'inferenza
-            tfliteInterpreter.run(inputBuffer, outputBuffer);
+            float[][] input = new float[1][inputSize];
+            System.arraycopy(inputData, 0, input[0], 0, inputSize);
 
-            // Interpreta i risultati
-            return interpretResults(outputBuffer[0]);
+            tflite.run(input, output);
+
+            // Trova la classe con probabilità più alta
+            return interpretOutput(output[0]);
 
         } catch (Exception e) {
-            return "Errore nella classificazione: " + e.getMessage();
+            Log.e(TAG, "❌ Errore durante la classificazione", e);
+            return null;
         }
     }
 
-    private void prepareInputBuffer(float[] audioFeatures) {
-        inputBuffer.rewind();
-
-        // Se le features sono più lunghe dell'input richiesto, tronca
-        // Se sono più corte, completa con zeri
-        int featuresToCopy = Math.min(audioFeatures.length, inputSize);
-
-        for (int i = 0; i < featuresToCopy; i++) {
-            inputBuffer.putFloat(audioFeatures[i]);
-        }
-
-        // Riempi il resto con zeri se necessario
-        for (int i = featuresToCopy; i < inputSize; i++) {
-            inputBuffer.putFloat(0.0f);
+    private float[] prepareInput(float[] audioData) {
+        try {
+            if (audioData.length == inputSize) {
+                // Dimensione corretta, usa direttamente
+                return audioData;
+            } else if (audioData.length > inputSize) {
+                // Tronca se troppo lungo
+                Log.d(TAG, "Troncamento audio: " + audioData.length + " -> " + inputSize);
+                float[] truncated = new float[inputSize];
+                System.arraycopy(audioData, 0, truncated, 0, inputSize);
+                return truncated;
+            } else {
+                // Pad con zeri se troppo corto
+                Log.d(TAG, "Padding audio: " + audioData.length + " -> " + inputSize);
+                float[] padded = new float[inputSize];
+                System.arraycopy(audioData, 0, padded, 0, audioData.length);
+                // Il resto rimane a 0.0f
+                return padded;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Errore nella preparazione dell'input", e);
+            return null;
         }
     }
 
-    private String interpretResults(float[] predictions) {
-        if (predictions == null || predictions.length == 0) {
-            return "Nessuna predizione";
+    private String interpretOutput(float[] probabilities) {
+        if (probabilities == null || probabilities.length == 0) {
+            return null;
         }
 
-        // Trova l'indice con la confidenza più alta
+        // Trova l'indice con la probabilità più alta
         int maxIndex = 0;
-        float maxConfidence = predictions[0];
+        float maxProb = probabilities[0];
 
-        for (int i = 1; i < predictions.length; i++) {
-            if (predictions[i] > maxConfidence) {
-                maxConfidence = predictions[i];
+        for (int i = 1; i < probabilities.length; i++) {
+            if (probabilities[i] > maxProb) {
+                maxProb = probabilities[i];
                 maxIndex = i;
             }
         }
 
-        // Controlla se la confidenza è sopra la soglia
-        if (maxConfidence < CONFIDENCE_THRESHOLD) {
-            return ""; // Non abbastanza confidenza, non restituire nulla
-        }
+        // Converte in percentuale
+        float confidence = maxProb * 100f;
 
-        // Restituisci il label con la confidenza
-        String label = (maxIndex < LABELS.length) ? LABELS[maxIndex] : "unknown_" + maxIndex;
-        return String.format("%s (%.2f%%)", label, maxConfidence * 100);
-    }
-
-    public String classifyWithDetails(float[] audioFeatures) {
-        if (tfliteInterpreter == null) {
-            return "Errore: modello non caricato";
-        }
-
-        if (audioFeatures == null || audioFeatures.length == 0) {
-            return "Errore: dati audio vuoti";
-        }
-
-        try {
-            // Prepara l'input
-            prepareInputBuffer(audioFeatures);
-
-            // Esegui l'inferenza
-            tfliteInterpreter.run(inputBuffer, outputBuffer);
-
-            // Restituisci risultati dettagliati
-            return getDetailedResults(outputBuffer[0]);
-
-        } catch (Exception e) {
-            return "Errore nella classificazione: " + e.getMessage();
-        }
-    }
-
-    private String getDetailedResults(float[] predictions) {
-        StringBuilder results = new StringBuilder();
-        results.append("Top 3 predizioni:\n");
-
-        // Crea una mappa per ordinare le predizioni
-        Map<Float, Integer> confidenceMap = new HashMap<>();
-        for (int i = 0; i < predictions.length; i++) {
-            confidenceMap.put(predictions[i], i);
-        }
-
-        // Ordina per confidenza (decrescente)
-        float[] sortedConfidences = predictions.clone();
-        java.util.Arrays.sort(sortedConfidences);
-
-        // Prendi i top 3
-        int count = 0;
-        for (int i = sortedConfidences.length - 1; i >= 0 && count < 3; i--) {
-            float confidence = sortedConfidences[i];
-            if (confidence > 0.01f) { // Solo se > 1%
-                Integer index = confidenceMap.get(confidence);
-                if (index != null) {
-                    String label = (index < LABELS.length) ? LABELS[index] : "unknown_" + index;
-                    results.append(String.format("%d. %s: %.2f%%\n",
-                            count + 1, label, confidence * 100));
-                    count++;
-                }
+        // Log delle probabilità per debug
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
+            StringBuilder sb = new StringBuilder("Probabilità: ");
+            for (int i = 0; i < Math.min(probabilities.length, LABELS.length); i++) {
+                sb.append(String.format("%s:%.1f%% ", LABELS[i], probabilities[i] * 100f));
             }
+            Log.d(TAG, sb.toString());
         }
 
-        return results.toString();
+        // Verifica soglia di confidenza (usa il valore da ModelConfig)
+        float threshold = ModelConfig.DEFAULT_CONFIDENCE_THRESHOLD * 100f; // Converte in percentuale
+        if (confidence < threshold) {
+            Log.d(TAG, "Confidenza troppo bassa: " + String.format("%.1f%%", confidence));
+            return null;
+        }
+
+        // Restituisci solo comandi riconoscibili (non silence/unknown)
+        if (maxIndex < LABELS.length) {
+            String label = LABELS[maxIndex];
+
+            // Filtra silence e unknown se hanno bassa confidenza
+            if ((label.equals("silence") || label.equals("unknown")) && confidence < 70f) {
+                return null;
+            }
+
+            return String.format("%s (%.1f%%)", label, confidence);
+        }
+
+        return null;
     }
 
-    // Metodi di utility
-    public String[] getAvailableLabels() {
-        return LABELS.clone();
+    public boolean isInitialized() {
+        return isInitialized;
     }
 
-    public float getConfidenceThreshold() {
-        return CONFIDENCE_THRESHOLD;
-    }
-
-    public int getExpectedInputSize() {
+    public int getInputSize() {
         return inputSize;
     }
 
@@ -226,14 +225,12 @@ public class KeywordClassifier {
         return outputSize;
     }
 
-    public boolean isModelLoaded() {
-        return tfliteInterpreter != null;
-    }
-
     public void close() {
-        if (tfliteInterpreter != null) {
-            tfliteInterpreter.close();
-            tfliteInterpreter = null;
+        if (tflite != null) {
+            tflite.close();
+            tflite = null;
         }
+        isInitialized = false;
+        Log.d(TAG, "KeywordClassifier chiuso");
     }
 }

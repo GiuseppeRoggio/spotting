@@ -3,10 +3,34 @@ package com.example.spotting;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.util.Log;
+
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class AudioRecorder {
+    private static final String TAG = "AudioRecorder";
+
+    // Configurazioni audio per il modello speech_commands.tflite
+    private static final int SAMPLE_RATE = 16000; // 16kHz richiesto dal modello
+    private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
+    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+
+    // Buffer per 1 secondo di audio (come richiesto dal modello)
+    private static final int BUFFER_SIZE_IN_SAMPLES = SAMPLE_RATE; // 16000 campioni = 1 secondo
+    private static final int MIN_BUFFER_SIZE = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
+
+    // Sliding window per cattura continua
+    private static final int OVERLAP_SIZE = SAMPLE_RATE / 4; // Overlap di 0.25 secondi
+
+    private AudioRecord audioRecord;
+    private boolean isRecording = false;
+    private ExecutorService executorService;
+    private AudioRecorderListener listener;
+
+    // Buffer circolare per la gestione dell'audio continuo
+    private short[] audioBuffer;
+    private int bufferPosition = 0;
 
     public interface AudioRecorderListener {
         void onAudioDataReceived(short[] audioData);
@@ -15,39 +39,18 @@ public class AudioRecorder {
         void onError(String error);
     }
 
-    // Configurazione audio compatibile con il modello TensorFlow Lite Speech Commands
-    private static final int SAMPLE_RATE = 16000; // 16kHz
-    private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
-    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
-    private static final int BUFFER_SIZE_FACTOR = 2;
-
-    // Configurazione per la detection del speech - ottimizzata per speech_commands.tflite
-    private static final int WINDOW_SIZE_MS = ModelConfig.AUDIO_LENGTH_MS;
-    private static final int WINDOW_SIZE_SAMPLES = ModelConfig.AUDIO_LENGTH_SAMPLES;
-    private static final double SILENCE_THRESHOLD = ModelConfig.SILENCE_THRESHOLD;
-    private static final int SILENCE_DURATION_MS = ModelConfig.SILENCE_DURATION_MS;
-
-    private AudioRecord audioRecord;
-    private ExecutorService executorService;
-    private AudioRecorderListener listener;
-
-    private boolean isRecording = false;
-    private int bufferSize;
-
-    // Stati per la detection del speech
-    private boolean wasSpeaking = false;
-    private long lastSpeechTime = 0;
-
     public AudioRecorder(AudioRecorderListener listener) {
         this.listener = listener;
         this.executorService = Executors.newSingleThreadExecutor();
+        this.audioBuffer = new short[BUFFER_SIZE_IN_SAMPLES];
+
         initAudioRecord();
     }
 
     private void initAudioRecord() {
         try {
-            bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
-            bufferSize = Math.max(bufferSize, WINDOW_SIZE_SAMPLES * 2) * BUFFER_SIZE_FACTOR;
+            // Calcola la dimensione del buffer ottimale
+            int bufferSize = Math.max(MIN_BUFFER_SIZE, BUFFER_SIZE_IN_SAMPLES * 2);
 
             audioRecord = new AudioRecord(
                     MediaRecorder.AudioSource.MIC,
@@ -61,7 +64,10 @@ public class AudioRecorder {
                 throw new RuntimeException("AudioRecord non inizializzato correttamente");
             }
 
+            Log.d(TAG, "AudioRecord inizializzato - Sample Rate: " + SAMPLE_RATE + "Hz, Buffer Size: " + bufferSize);
+
         } catch (Exception e) {
+            Log.e(TAG, "Errore nell'inizializzazione di AudioRecord", e);
             if (listener != null) {
                 listener.onError("Errore inizializzazione AudioRecord: " + e.getMessage());
             }
@@ -69,7 +75,7 @@ public class AudioRecorder {
     }
 
     public void startRecording() {
-        if (audioRecord == null || audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+        if (audioRecord == null) {
             if (listener != null) {
                 listener.onError("AudioRecord non inizializzato");
             }
@@ -77,6 +83,7 @@ public class AudioRecorder {
         }
 
         if (isRecording) {
+            Log.w(TAG, "Registrazione già in corso");
             return;
         }
 
@@ -84,9 +91,16 @@ public class AudioRecorder {
             audioRecord.startRecording();
             isRecording = true;
 
-            executorService.execute(this::recordingLoop);
+            // Reset del buffer
+            bufferPosition = 0;
+
+            // Avvia il thread di registrazione
+            executorService.submit(this::recordingLoop);
+
+            Log.d(TAG, "Registrazione avviata");
 
         } catch (Exception e) {
+            Log.e(TAG, "Errore nell'avvio della registrazione", e);
             if (listener != null) {
                 listener.onError("Errore avvio registrazione: " + e.getMessage());
             }
@@ -94,66 +108,48 @@ public class AudioRecorder {
     }
 
     public void stopRecording() {
+        if (!isRecording) {
+            return;
+        }
+
         isRecording = false;
 
-        if (audioRecord != null && audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-            try {
+        try {
+            if (audioRecord != null) {
                 audioRecord.stop();
-            } catch (Exception e) {
-                if (listener != null) {
-                    listener.onError("Errore stop registrazione: " + e.getMessage());
-                }
+            }
+            Log.d(TAG, "Registrazione fermata");
+        } catch (Exception e) {
+            Log.e(TAG, "Errore nella chiusura della registrazione", e);
+            if (listener != null) {
+                listener.onError("Errore chiusura registrazione: " + e.getMessage());
             }
         }
     }
 
     private void recordingLoop() {
-        short[] audioBuffer = new short[WINDOW_SIZE_SAMPLES];
+        short[] readBuffer = new short[1024]; // Buffer di lettura piccolo per bassa latenza
 
         while (isRecording) {
             try {
-                int bytesRead = audioRecord.read(audioBuffer, 0, audioBuffer.length);
+                int bytesRead = audioRecord.read(readBuffer, 0, readBuffer.length);
 
                 if (bytesRead > 0) {
-                    // Analizza il volume per rilevare speech/silenzio
-                    double rms = calculateRMS(audioBuffer, bytesRead);
-                    boolean isSpeaking = rms > SILENCE_THRESHOLD;
-
-                    long currentTime = System.currentTimeMillis();
-
-                    if (isSpeaking) {
-                        lastSpeechTime = currentTime;
-                        if (!wasSpeaking) {
-                            wasSpeaking = true;
-                            if (listener != null) {
-                                listener.onSpeechDetected();
-                            }
-                        }
-                    } else {
-                        if (wasSpeaking && (currentTime - lastSpeechTime > SILENCE_DURATION_MS)) {
-                            wasSpeaking = false;
-                            if (listener != null) {
-                                listener.onSilenceDetected();
-                            }
-                        }
-                    }
-
-                    // Invia i dati audio per la classificazione solo se c'è speech
-                    if (isSpeaking && listener != null) {
-                        // Crea una copia dei dati per evitare problemi di concorrenza
-                        short[] audioData = new short[bytesRead];
-                        System.arraycopy(audioBuffer, 0, audioData, 0, bytesRead);
-                        listener.onAudioDataReceived(audioData);
-                    }
-
-                } else {
+                    processAudioData(readBuffer, bytesRead);
+                } else if (bytesRead == AudioRecord.ERROR_INVALID_OPERATION) {
                     if (listener != null) {
-                        listener.onError("Errore lettura audio: bytesRead = " + bytesRead);
+                        listener.onError("Operazione AudioRecord non valida");
+                    }
+                    break;
+                } else if (bytesRead == AudioRecord.ERROR_BAD_VALUE) {
+                    if (listener != null) {
+                        listener.onError("Valore AudioRecord non valido");
                     }
                     break;
                 }
 
             } catch (Exception e) {
+                Log.e(TAG, "Errore nel loop di registrazione", e);
                 if (listener != null) {
                     listener.onError("Errore nel loop di registrazione: " + e.getMessage());
                 }
@@ -162,38 +158,77 @@ public class AudioRecorder {
         }
     }
 
-    private double calculateRMS(short[] audioData, int length) {
-        double sum = 0;
+    private void processAudioData(short[] newData, int length) {
+        // Aggiungi i nuovi dati al buffer circolare
         for (int i = 0; i < length; i++) {
-            sum += audioData[i] * audioData[i];
+            audioBuffer[bufferPosition] = newData[i];
+            bufferPosition = (bufferPosition + 1) % BUFFER_SIZE_IN_SAMPLES;
+
+            // Quando il buffer è pieno, invia i dati per la classificazione
+            if (bufferPosition == 0) {
+                // Crea una copia del buffer per evitare modifiche durante la classificazione
+                short[] bufferCopy = new short[BUFFER_SIZE_IN_SAMPLES];
+                System.arraycopy(audioBuffer, 0, bufferCopy, 0, BUFFER_SIZE_IN_SAMPLES);
+
+                // Rileva se c'è parlato o silenzio
+                detectSpeechOrSilence(bufferCopy);
+
+                // Invia i dati al listener
+                if (listener != null) {
+                    listener.onAudioDataReceived(bufferCopy);
+                }
+            }
         }
-        return Math.sqrt(sum / length);
+    }
+
+    private void detectSpeechOrSilence(short[] audioData) {
+        // Calcola il livello medio di energia
+        long energy = 0;
+        for (short sample : audioData) {
+            energy += (long) sample * sample;
+        }
+
+        double rms = Math.sqrt((double) energy / audioData.length);
+
+        // Soglia per distinguere tra parlato e silenzio
+        // Valori tipici: silenzio < 500, parlato > 1000
+        double speechThreshold = 800.0;
+
+        if (listener != null) {
+            if (rms > speechThreshold) {
+                listener.onSpeechDetected();
+            } else {
+                listener.onSilenceDetected();
+            }
+        }
     }
 
     public void release() {
         stopRecording();
 
-        if (executorService != null && !executorService.isShutdown()) {
-            executorService.shutdown();
+        if (executorService != null) {
+            executorService.shutdownNow();
         }
 
         if (audioRecord != null) {
             try {
                 audioRecord.release();
+                audioRecord = null;
             } catch (Exception e) {
-                // Log dell'errore se necessario
+                Log.e(TAG, "Errore nel rilascio di AudioRecord", e);
             }
-            audioRecord = null;
         }
+
+        Log.d(TAG, "AudioRecorder rilasciato");
     }
 
-    // Metodi getter per informazioni sull'audio
+    // Metodi getter per informazioni
     public int getSampleRate() {
         return SAMPLE_RATE;
     }
 
-    public int getWindowSizeSamples() {
-        return WINDOW_SIZE_SAMPLES;
+    public int getBufferSizeInSamples() {
+        return BUFFER_SIZE_IN_SAMPLES;
     }
 
     public boolean isRecording() {

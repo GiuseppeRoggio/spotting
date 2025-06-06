@@ -10,7 +10,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-public class MainActivity extends AppCompatActivity implements AudioRecorder.AudioRecorderListener {
+public class MainActivity extends AppCompatActivity {
 
     private static final int RECORD_AUDIO_PERMISSION_CODE = 1;
 
@@ -18,10 +18,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
     private TextView tvLog;
     private ScrollView scrollViewLog;
 
-    private AudioRecorder audioRecorder;
-    private AudioPreprocessor audioPreprocessor;
     private KeywordClassifier keywordClassifier;
-
     private boolean isRecording = false;
 
     @Override
@@ -41,19 +38,24 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
         tvLog = findViewById(R.id.tvLog);
         scrollViewLog = findViewById(R.id.scrollViewLog);
 
-        btnRecord.setOnClickListener(v -> toggleRecording());
+        btnRecord.setOnClickListener(v -> testClassifier());
     }
 
     private void initComponents() {
         try {
-            audioRecorder = new AudioRecorder(this);
-            audioPreprocessor = new AudioPreprocessor();
+            // Inizializza solo KeywordClassifier per il test
             keywordClassifier = new KeywordClassifier(this);
-
-            logMessage("Componenti inizializzati correttamente");
-            logMessage(ModelConfig.getModelInfo());
+            if (keywordClassifier.isInitialized()) {
+                logMessage("✅ KeywordClassifier inizializzato");
+                logMessage("📊 Modello info: Input=" + keywordClassifier.getInputSize() +
+                        ", Output=" + keywordClassifier.getOutputSize());
+                logMessage(ModelConfig.getTechnicalInfo());
+            } else {
+                logMessage("❌ KeywordClassifier non inizializzato correttamente");
+            }
         } catch (Exception e) {
-            logMessage("Errore nell'inizializzazione: " + e.getMessage());
+            logMessage("❌ Errore KeywordClassifier: " + e.getMessage());
+            keywordClassifier = null;
         }
     }
 
@@ -71,79 +73,47 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == RECORD_AUDIO_PERMISSION_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                logMessage("Permesso audio concesso");
+                logMessage("✅ Permesso audio concesso");
             } else {
-                logMessage("Permesso audio negato - L'app non può funzionare");
+                logMessage("❌ Permesso audio negato - L'app non può funzionare");
             }
         }
     }
 
-    private void toggleRecording() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            logMessage("Permesso audio non concesso");
+    private void testClassifier() {
+        if (keywordClassifier == null || !keywordClassifier.isInitialized()) {
+            logMessage("❌ KeywordClassifier non disponibile");
             return;
         }
 
-        if (!isRecording) {
-            startRecording();
-        } else {
-            stopRecording();
-        }
-    }
+        // Test con dati audio fittizi per verificare che il classificatore funzioni
+        logMessage("🧪 Test del classificatore...");
 
-    private void startRecording() {
         try {
-            audioRecorder.startRecording();
-            isRecording = true;
-            btnRecord.setText("STOP RECORDING");
-            logMessage("Registrazione avviata");
+            // Crea un array di test con la dimensione corretta
+            int inputSize = keywordClassifier.getInputSize();
+            float[] testAudio = new float[inputSize];
+
+            // Riempi con valori casuali normalizzati
+            for (int i = 0; i < inputSize; i++) {
+                testAudio[i] = (float) (Math.random() * 2.0 - 1.0); // Valori tra -1 e 1
+            }
+
+            // Prova la classificazione
+            String result = keywordClassifier.classify(testAudio);
+
+            if (result != null && !result.isEmpty()) {
+                String command = result.split("\\s+")[0];
+                String description = ModelConfig.getCommandDescription(command);
+                logMessage("🎯 Test completato: " + description + " - " + result);
+            } else {
+                logMessage("🔍 Test completato: Nessun comando riconosciuto (normale con dati casuali)");
+            }
+
         } catch (Exception e) {
-            logMessage("Errore nell'avvio della registrazione: " + e.getMessage());
+            logMessage("❌ Errore nel test: " + e.getMessage());
+            e.printStackTrace();
         }
-    }
-
-    private void stopRecording() {
-        try {
-            audioRecorder.stopRecording();
-            isRecording = false;
-            btnRecord.setText("START RECORDING");
-            logMessage("Registrazione fermata");
-        } catch (Exception e) {
-            logMessage("Errore nella chiusura della registrazione: " + e.getMessage());
-        }
-    }
-
-    // Implementazione delle callback dall'AudioRecorder
-    @Override
-    public void onAudioDataReceived(short[] audioData) {
-        // Preprocessa l'audio
-        float[] preprocessedAudio = audioPreprocessor.preprocessAudio(audioData);
-
-        // Classifica l'audio
-        String result = keywordClassifier.classify(preprocessedAudio);
-
-        if (result != null && !result.isEmpty()) {
-            // Estrai il comando dalla stringa risultato (formato: "comando (xx.xx%)")
-            String command = result.split("\\s+")[0];
-            String description = ModelConfig.getCommandDescription(command);
-            logMessage("🎯 " + description + " - " + result);
-        }
-    }
-
-    @Override
-    public void onSilenceDetected() {
-        logMessage("Rilevato silenzio");
-    }
-
-    @Override
-    public void onSpeechDetected() {
-        logMessage("Rilevato parlato");
-    }
-
-    @Override
-    public void onError(String error) {
-        logMessage("Errore: " + error);
     }
 
     public void logMessage(String message) {
@@ -160,9 +130,6 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (audioRecorder != null) {
-            audioRecorder.release();
-        }
         if (keywordClassifier != null) {
             keywordClassifier.close();
         }

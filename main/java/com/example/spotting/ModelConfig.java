@@ -1,128 +1,105 @@
 package com.example.spotting;
 
-/**
- * Configurazione specifica per il modello speech_commands.tflite
- * Contiene tutti i parametri ottimizzati per i 10 comandi vocali
- */
+import java.util.HashMap;
+import java.util.Map;
+
 public class ModelConfig {
 
-    // Informazioni del modello
-    public static final String MODEL_NAME = "speech_commands.tflite";
-    public static final String MODEL_VERSION = "1.0";
-    public static final int NUM_CLASSES = 10;
+    // Informazioni sul modello
+    public static final String MODEL_NAME = "Google Speech Commands v2";
+    public static final String MODEL_FILE = "speech_commands.tflite";
+    public static final String MODEL_VERSION = "v0.02";
 
-    // Comandi vocali supportati dal modello
-    public static final String[] VOICE_COMMANDS = {
-            "stop", "down", "off", "right", "up",
-            "go", "on", "yes", "left", "no"
-    };
+    // Configurazioni tecniche
+    public static final int SAMPLE_RATE = 16000; // Hz
+    public static final int INPUT_LENGTH = 16000; // campioni (1 secondo)
+    public static final int NUM_CLASSES = 12;
+    public static final float DEFAULT_CONFIDENCE_THRESHOLD = 0.3f;
 
-    // Parametri audio ottimizzati per questo modello
-    public static final int SAMPLE_RATE = 16000; // 16kHz
-    public static final int AUDIO_LENGTH_MS = 1000; // 1 secondo
-    public static final int AUDIO_LENGTH_SAMPLES = SAMPLE_RATE * AUDIO_LENGTH_MS / 1000;
+    // Mappa dei comandi con le loro descrizioni
+    private static final Map<String, String> COMMAND_DESCRIPTIONS = new HashMap<>();
 
-    // Parametri per preprocessing MFCC
-    public static final int N_MFCC = 13;
-    public static final int N_FFT = 2048;
-    public static final int HOP_LENGTH = 512;
-    public static final int N_MELS = 40;
-    public static final int FMIN = 20;
-    public static final int FMAX = SAMPLE_RATE / 2;
-
-    // Soglie di confidenza e rilevamento
-    public static final float CONFIDENCE_THRESHOLD = 0.6f; // 60% per maggiore accuratezza
-    public static final double SILENCE_THRESHOLD = 800.0; // Soglia RMS per speech detection
-    public static final int SILENCE_DURATION_MS = 300; // 300ms di silenzio
-
-    // Parametri per normalizzazione audio
-    public static final float PRE_EMPHASIS_COEFF = 0.97f;
-    public static final float AUDIO_NORMALIZATION_FACTOR = 32768.0f; // 2^15 per 16-bit audio
-
-    // Dimensioni input/output del modello (da verificare con il modello reale)
-    public static final int[] EXPECTED_INPUT_SHAPE = {1, 1960}; // Tipico per speech commands
-    public static final int[] EXPECTED_OUTPUT_SHAPE = {1, 10}; // 10 classi
+    static {
+        // Inizializza le descrizioni dei comandi
+        COMMAND_DESCRIPTIONS.put("yes", "Sì - Conferma affermativa");
+        COMMAND_DESCRIPTIONS.put("no", "No - Negazione");
+        COMMAND_DESCRIPTIONS.put("up", "Su - Movimento verso l'alto");
+        COMMAND_DESCRIPTIONS.put("down", "Giù - Movimento verso il basso");
+        COMMAND_DESCRIPTIONS.put("left", "Sinistra - Movimento a sinistra");
+        COMMAND_DESCRIPTIONS.put("right", "Destra - Movimento a destra");
+        COMMAND_DESCRIPTIONS.put("on", "Accendi - Attiva qualcosa");
+        COMMAND_DESCRIPTIONS.put("off", "Spegni - Disattiva qualcosa");
+        COMMAND_DESCRIPTIONS.put("stop", "Stop - Ferma l'azione");
+        COMMAND_DESCRIPTIONS.put("go", "Vai - Inizia l'azione");
+        COMMAND_DESCRIPTIONS.put("_silence_", "Silenzio rilevato");
+        COMMAND_DESCRIPTIONS.put("_unknown_", "Comando sconosciuto");
+    }
 
     /**
-     * Restituisce una descrizione testuale del comando riconosciuto
+     * Restituisce la descrizione di un comando
      */
     public static String getCommandDescription(String command) {
-        switch (command.toLowerCase()) {
-            case "stop":
-                return "Comando: FERMA";
-            case "down":
-                return "Comando: GIÙ";
-            case "off":
-                return "Comando: SPEGNI";
-            case "right":
-                return "Comando: DESTRA";
-            case "up":
-                return "Comando: SU";
-            case "go":
-                return "Comando: VAI";
-            case "on":
-                return "Comando: ACCENDI";
-            case "yes":
-                return "Comando: SÌ";
-            case "left":
-                return "Comando: SINISTRA";
-            case "no":
-                return "Comando: NO";
-            default:
-                return "Comando sconosciuto";
-        }
+        return COMMAND_DESCRIPTIONS.getOrDefault(command, "Comando non riconosciuto: " + command);
     }
 
     /**
-     * Verifica se un comando è valido
-     */
-    public static boolean isValidCommand(String command) {
-        if (command == null) return false;
-
-        for (String validCommand : VOICE_COMMANDS) {
-            if (validCommand.equalsIgnoreCase(command.trim())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Restituisce statistiche del modello
+     * Restituisce informazioni complete sul modello
      */
     public static String getModelInfo() {
-        return String.format(
-                "Modello: %s\n" +
-                        "Versione: %s\n" +
-                        "Comandi supportati: %d\n" +
-                        "Frequenza campionamento: %d Hz\n" +
-                        "Durata finestra: %d ms\n" +
-                        "Soglia confidenza: %.0f%%",
-                MODEL_NAME, MODEL_VERSION, NUM_CLASSES,
-                SAMPLE_RATE, AUDIO_LENGTH_MS, CONFIDENCE_THRESHOLD * 100
-        );
+        StringBuilder info = new StringBuilder();
+        info.append("=== CONFIGURAZIONE MODELLO ===\n");
+        info.append("Nome: ").append(MODEL_NAME).append("\n");
+        info.append("File: ").append(MODEL_FILE).append("\n");
+        info.append("Versione: ").append(MODEL_VERSION).append("\n");
+        info.append("Frequenza campionamento: ").append(SAMPLE_RATE).append(" Hz\n");
+        info.append("Lunghezza input: ").append(INPUT_LENGTH).append(" campioni (1 secondo)\n");
+        info.append("Numero classi: ").append(NUM_CLASSES).append("\n");
+        info.append("Soglia confidenza: ").append(DEFAULT_CONFIDENCE_THRESHOLD).append("\n");
+        info.append("=== COMANDI SUPPORTATI ===\n");
+
+        // Lista dei comandi (esclusi silence e unknown)
+        String[] commands = {"yes", "no", "up", "down", "left", "right", "on", "off", "stop", "go"};
+        for (String cmd : commands) {
+            info.append("• ").append(cmd.toUpperCase()).append(": ").append(getCommandDescription(cmd)).append("\n");
+        }
+
+        return info.toString();
     }
 
     /**
-     * Ottiene il colore per la visualizzazione del comando
+     * Restituisce solo i comandi vocali riconosciuti (senza silence/unknown)
      */
-    public static int getCommandColor(String command) {
-        switch (command.toLowerCase()) {
-            case "stop":
-            case "off":
-            case "no":
-                return 0xFFE53935; // Rosso per comandi "negativi"
-            case "go":
-            case "on":
-            case "yes":
-                return 0xFF43A047; // Verde per comandi "positivi"
-            case "up":
-            case "down":
-            case "left":
-            case "right":
-                return 0xFF1E88E5; // Blu per comandi direzionali
-            default:
-                return 0xFF757575; // Grigio per default
-        }
+    public static String[] getSupportedCommands() {
+        return new String[]{"yes", "no", "up", "down", "left", "right", "on", "off", "stop", "go"};
+    }
+
+    /**
+     * Restituisce una stringa con i comandi separati da virgola
+     */
+    public static String getSupportedCommandsString() {
+        return "yes, no, up, down, left, right, on, off, stop, go";
+    }
+
+    /**
+     * Verifica se un comando è supportato
+     */
+    public static boolean isCommandSupported(String command) {
+        return COMMAND_DESCRIPTIONS.containsKey(command) &&
+                !command.equals("_silence_") &&
+                !command.equals("_unknown_");
+    }
+
+    /**
+     * Restituisce informazioni tecniche per il debug
+     */
+    public static String getTechnicalInfo() {
+        return String.format(
+                "Input: %d campioni float32 normalizzati [-1,1]\n" +
+                        "Output: %d probabilità [0,1]\n" +
+                        "Preprocessing: Normalizzazione + Pre-emphasis + High-pass filter\n" +
+                        "Framework: TensorFlow Lite\n" +
+                        "Architettura: CNN ottimizzata per keyword spotting",
+                INPUT_LENGTH, NUM_CLASSES
+        );
     }
 }
