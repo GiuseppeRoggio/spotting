@@ -8,6 +8,8 @@ import java.io.FileInputStream;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Arrays;
+import java.util.LinkedList;
+import java.util.Queue;
 
 public class KeywordClassifier {
     private static final String TAG = "KeywordClassifier";
@@ -17,6 +19,10 @@ public class KeywordClassifier {
     private int inputSize;
     private int outputSize;
     private boolean isInitialized = false;
+
+    // Buffer per accumulare audio fino alla dimensione richiesta
+    private Queue<Float> audioBuffer = new LinkedList<>();
+    private final Object bufferLock = new Object();
 
     // Labels per il modello Google Speech Commands v2
     private static final String[] LABELS = {
@@ -52,9 +58,9 @@ public class KeywordClassifier {
             Log.d(TAG, "Input shape: " + Arrays.toString(inputShape));
             Log.d(TAG, "Output shape: " + Arrays.toString(outputShape));
 
-            // Per il modello Google Speech Commands, l'input dovrebbe essere [1, 16000]
+            // Per il modello Google Speech Commands, l'input dovrebbe essere [1, samples]
             if (inputShape.length >= 2) {
-                inputSize = inputShape[1]; // Seconda dimensione
+                inputSize = inputShape[1]; // Seconda dimensione (numero di campioni)
             } else {
                 inputSize = inputShape[0]; // Prima dimensione se è 1D
             }
@@ -66,19 +72,13 @@ public class KeywordClassifier {
             }
 
             Log.d(TAG, "Configurazione modello:");
-            Log.d(TAG, "- Input size: " + inputSize);
-            Log.d(TAG, "- Output size: " + outputSize);
+            Log.d(TAG, "- Input size: " + inputSize + " campioni");
+            Log.d(TAG, "- Output size: " + outputSize + " classi");
+            Log.d(TAG, "- Durata audio richiesta: " + (inputSize / 16000.0f) + " secondi");
             Log.d(TAG, "- Classi supportate: " + LABELS.length);
 
-            // Verifica che le dimensioni siano corrette
-            if (inputSize != 16000) {
-                Log.w(TAG, "⚠️ ATTENZIONE: Input size non standard: " + inputSize + " (atteso: 16000)");
-                Log.w(TAG, "Il modello potrebbe richiedere preprocessing diverso");
-            }
-
-            if (outputSize != LABELS.length) {
-                Log.w(TAG, "⚠️ ATTENZIONE: Output size non corrisponde alle label: " + outputSize + " vs " + LABELS.length);
-            }
+            // Inizializza il buffer
+            audioBuffer.clear();
 
             isInitialized = true;
             Log.d(TAG, "✅ KeywordClassifier inizializzato correttamente");
@@ -92,7 +92,7 @@ public class KeywordClassifier {
     private MappedByteBuffer loadModelFile(Context context) throws Exception {
         AssetFileDescriptor fileDescriptor = context.getAssets().openFd(MODEL_PATH);
         FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
-        FileChannel fileChannel = inputStream.getChannel(); // FIX: Usa getChannel() invece di getFileChannel()
+        FileChannel fileChannel = inputStream.getChannel();
         long startOffset = fileDescriptor.getStartOffset();
         long declaredLength = fileDescriptor.getDeclaredLength();
         MappedByteBuffer buffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
@@ -111,54 +111,46 @@ public class KeywordClassifier {
             return null;
         }
 
-        try {
-            // Adatta i dati audio alla dimensione richiesta dal modello
-            float[] inputData = prepareInput(audioData);
-
-            if (inputData == null) {
-                Log.e(TAG, "❌ Errore nella preparazione dell'input");
-                return null;
+        synchronized (bufferLock) {
+            // Aggiungi i nuovi campioni al buffer
+            for (float sample : audioData) {
+                audioBuffer.offer(sample);
             }
+
+            // Se abbiamo abbastanza campioni, esegui la classificazione
+            if (audioBuffer.size() >= inputSize) {
+                float[] inputData = new float[inputSize];
+
+                // Estrai i campioni dal buffer
+                for (int i = 0; i < inputSize; i++) {
+                    inputData[i] = audioBuffer.poll();
+                }
+
+                // Esegui la classificazione
+                return performClassification(inputData);
+            }
+        }
+
+        return null; // Non abbastanza dati ancora
+    }
+
+    private String performClassification(float[] inputData) {
+        try {
+            // Prepara l'input per TensorFlow Lite
+            float[][] input = new float[1][inputSize];
+            System.arraycopy(inputData, 0, input[0], 0, inputSize);
 
             // Prepara l'output
             float[][] output = new float[1][outputSize];
 
             // Esegui l'inferenza
-            float[][] input = new float[1][inputSize];
-            System.arraycopy(inputData, 0, input[0], 0, inputSize);
-
             tflite.run(input, output);
 
-            // Trova la classe con probabilità più alta
+            // Interpreta il risultato
             return interpretOutput(output[0]);
 
         } catch (Exception e) {
             Log.e(TAG, "❌ Errore durante la classificazione", e);
-            return null;
-        }
-    }
-
-    private float[] prepareInput(float[] audioData) {
-        try {
-            if (audioData.length == inputSize) {
-                // Dimensione corretta, usa direttamente
-                return audioData;
-            } else if (audioData.length > inputSize) {
-                // Tronca se troppo lungo
-                Log.d(TAG, "Troncamento audio: " + audioData.length + " -> " + inputSize);
-                float[] truncated = new float[inputSize];
-                System.arraycopy(audioData, 0, truncated, 0, inputSize);
-                return truncated;
-            } else {
-                // Pad con zeri se troppo corto
-                Log.d(TAG, "Padding audio: " + audioData.length + " -> " + inputSize);
-                float[] padded = new float[inputSize];
-                System.arraycopy(audioData, 0, padded, 0, audioData.length);
-                // Il resto rimane a 0.0f
-                return padded;
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "❌ Errore nella preparazione dell'input", e);
             return null;
         }
     }
@@ -183,34 +175,49 @@ public class KeywordClassifier {
         float confidence = maxProb * 100f;
 
         // Log delle probabilità per debug
-        if (Log.isLoggable(TAG, Log.DEBUG)) {
-            StringBuilder sb = new StringBuilder("Probabilità: ");
-            for (int i = 0; i < Math.min(probabilities.length, LABELS.length); i++) {
-                sb.append(String.format("%s:%.1f%% ", LABELS[i], probabilities[i] * 100f));
-            }
-            Log.d(TAG, sb.toString());
+        StringBuilder sb = new StringBuilder("Probabilità: ");
+        for (int i = 0; i < Math.min(probabilities.length, LABELS.length); i++) {
+            sb.append(String.format("%s:%.1f%% ", LABELS[i], probabilities[i] * 100f));
         }
+        Log.d(TAG, sb.toString());
 
-        // Verifica soglia di confidenza (usa il valore da ModelConfig)
-        float threshold = ModelConfig.DEFAULT_CONFIDENCE_THRESHOLD * 100f; // Converte in percentuale
+        // Verifica soglia di confidenza
+        float threshold = ModelConfig.DEFAULT_CONFIDENCE_THRESHOLD * 100f;
         if (confidence < threshold) {
             Log.d(TAG, "Confidenza troppo bassa: " + String.format("%.1f%%", confidence));
             return null;
         }
 
-        // Restituisci solo comandi riconoscibili (non silence/unknown)
+        // Restituisci solo comandi riconoscibili (non silence/unknown con bassa confidenza)
         if (maxIndex < LABELS.length) {
             String label = LABELS[maxIndex];
 
             // Filtra silence e unknown se hanno bassa confidenza
             if ((label.equals("silence") || label.equals("unknown")) && confidence < 70f) {
+                Log.d(TAG, "Comando ignorato: " + label + " (confidenza troppo bassa)");
                 return null;
             }
 
+            Log.d(TAG, "🎯 COMANDO RICONOSCIUTO: " + label + " (confidenza: " + String.format("%.1f%%)", confidence));
             return String.format("%s (%.1f%%)", label, confidence);
         }
 
         return null;
+    }
+
+    // Metodo per resettare il buffer (utile per nuove sessioni)
+    public void resetBuffer() {
+        synchronized (bufferLock) {
+            audioBuffer.clear();
+            Log.d(TAG, "Buffer audio resettato");
+        }
+    }
+
+    // Metodo per verificare quanti campioni sono nel buffer
+    public int getBufferSize() {
+        synchronized (bufferLock) {
+            return audioBuffer.size();
+        }
     }
 
     public boolean isInitialized() {
@@ -230,6 +237,11 @@ public class KeywordClassifier {
             tflite.close();
             tflite = null;
         }
+
+        synchronized (bufferLock) {
+            audioBuffer.clear();
+        }
+
         isInitialized = false;
         Log.d(TAG, "KeywordClassifier chiuso");
     }

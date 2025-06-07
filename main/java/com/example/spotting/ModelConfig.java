@@ -6,7 +6,7 @@ import java.util.Map;
 public class ModelConfig {
 
     // Informazioni sul modello
-    public static final String MODEL_NAME = "Google Speech Commands v2";
+    public static final String MODEL_NAME = "Google Speech Commands";
     public static final String MODEL_FILE = "speech_commands.tflite";
     public static final String MODEL_VERSION = "v0.02";
 
@@ -14,7 +14,7 @@ public class ModelConfig {
     public static final int SAMPLE_RATE = 16000; // Hz
     public static final int INPUT_LENGTH = 16000; // campioni (1 secondo)
     public static final int NUM_CLASSES = 12;
-    public static final float DEFAULT_CONFIDENCE_THRESHOLD = 0.3f;
+    public static final float DEFAULT_CONFIDENCE_THRESHOLD = 0.1f;
 
     // Mappa dei comandi con le loro descrizioni
     private static final Map<String, String> COMMAND_DESCRIPTIONS = new HashMap<>();
