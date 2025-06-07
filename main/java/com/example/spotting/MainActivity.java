@@ -254,7 +254,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
             // Estrae il comando e la confidenza dal risultato
             String[] parts = result.split("[()%]");
             String command = parts[0].trim();
-            float confidence = parts.length > 1 ? Float.parseFloat(parts[1].trim()) : 0f;
+            float confidence = parts.length > 1 ? Float.parseFloat(parts[1].trim().replace(',', '.')) : 0f;
 
             // Verifica se è un comando supportato
             if (!ModelConfig.isCommandSupported(command)) {
