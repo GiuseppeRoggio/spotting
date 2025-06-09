@@ -34,12 +34,8 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
     private long lastCommandTime = 0;
     private String lastCommand = "";
 
-    // ✅ NUOVO: Gestione thread per elaborazione audio
+    // Handler per elaborazione audio in background
     private Handler audioProcessingHandler;
-
-    // ✅ NUOVO: Controllo qualità audio
-    private int consecutiveSilenceCount = 0;
-    private static final int MAX_CONSECUTIVE_SILENCE = 3; // 3 secondi di silenzio
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -51,7 +47,9 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
         checkPermissions();
 
         logMessage("🎤 App Keyword Spotting pronta");
-        logMessage("📋 " + ModelConfig.getSupportedCommandsString());
+        logMessage("📋 Comandi supportati: " + ModelConfig.getSupportedCommandsString());
+        logMessage("🔧 " + String.format("Buffer: %d campioni (%.2f secondi)",
+                ModelConfig.getExpectedSamples(), ModelConfig.AUDIO_DURATION_SECONDS));
     }
 
     private void initViews() {
@@ -65,7 +63,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
 
     private void initComponents() {
         try {
-            // ✅ NUOVO: Handler per elaborazione audio in background
+            // Handler per elaborazione audio in background
             audioProcessingHandler = new Handler(Looper.getMainLooper());
 
             // Inizializza KeywordClassifier
@@ -74,6 +72,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
                 logMessage("✅ KeywordClassifier inizializzato");
                 logMessage("📊 Input: " + keywordClassifier.getInputSize() +
                         " campioni, Output: " + keywordClassifier.getOutputSize() + " classi");
+                logMessage("🎯 Soglia confidenza: " + (keywordClassifier.getConfidenceThreshold() * 100) + "%");
             } else {
                 logMessage("❌ KeywordClassifier non inizializzato");
                 return;
@@ -82,16 +81,18 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
             // Inizializza AudioPreprocessor
             audioPreprocessor = new AudioPreprocessor();
             logMessage("✅ AudioPreprocessor inizializzato");
+            logMessage("📊 Samples attesi: " + audioPreprocessor.getExpectedSamples());
 
-            // Inizializza AudioRecorder (passa 'this' come listener)
+            // Inizializza AudioRecorder
             audioRecorder = new AudioRecorder(this);
             logMessage("✅ AudioRecorder inizializzato");
             logMessage("🔧 Sample Rate: " + audioRecorder.getSampleRate() + "Hz");
             logMessage("🔧 Buffer Size: " + audioRecorder.getBufferSizeInSamples() + " campioni");
+            logMessage("⏱️ Durata buffer: " + String.format("%.2f", audioRecorder.getBufferDurationSeconds()) + " secondi");
 
         } catch (Exception e) {
             logMessage("❌ Errore inizializzazione: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "Errore inizializzazione", e);
         }
     }
 
@@ -140,13 +141,6 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
 
     private void startRecording() {
         try {
-            // ✅ NUOVO: Reset del buffer prima di iniziare
-            if (keywordClassifier != null) {
-                keywordClassifier
-                        .resetBuffer();
-                Log.d(TAG, "Buffer reset prima dell'avvio registrazione");
-            }
-
             audioRecorder.startRecording();
             isRecording = true;
 
@@ -154,17 +148,17 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
             totalClassifications = 0;
             successfulClassifications = 0;
             lastCommandTime = System.currentTimeMillis();
-            consecutiveSilenceCount = 0; // ✅ NUOVO: Reset contatore silenzio
 
             logMessage("🎙️ Registrazione AVVIATA - Parlare ora...");
             logMessage("🎯 In ascolto per i comandi vocali...");
-            logMessage("🔧 Buffer classifier: " + keywordClassifier.getBufferSize() + " campioni");
+            logMessage("⏳ Il primo buffer completo sarà pronto tra " +
+                    String.format("%.1f", audioRecorder.getBufferDurationSeconds()) + " secondi");
 
             updateUI();
 
         } catch (Exception e) {
             logMessage("❌ Errore avvio registrazione: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "Errore avvio registrazione", e);
         }
     }
 
@@ -188,7 +182,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
 
         } catch (Exception e) {
             logMessage("❌ Errore stop registrazione: " + e.getMessage());
-            e.printStackTrace();
+            Log.e(TAG, "Errore stop registrazione", e);
         }
     }
 
@@ -214,8 +208,8 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
 
     @Override
     public void onAudioDataReceived(short[] audioData) {
-        // Questo metodo viene chiamato ogni secondo con un buffer di 16000 campioni
-        // ✅ MIGLIORAMENTO: Elaborazione asincrona per non bloccare il thread audio
+        // Questo metodo viene chiamato ogni volta che il buffer circolare è completo (44032 campioni)
+        // Elaborazione asincrona per non bloccare il thread audio
         if (audioProcessingHandler != null) {
             audioProcessingHandler.post(() -> processAudioData(audioData));
         } else {
@@ -225,57 +219,30 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
 
     @Override
     public void onRecordingStopped() {
-        // Quando la registrazione si ferma, svuota completamente il buffer
-        if (keywordClassifier != null) {
-            keywordClassifier.clearBuffer();
-            logMessage("🧹 Buffer audio svuotato per arresto registrazione");
-            Log.d(TAG, "Buffer svuotato per arresto registrazione");
-        }
+        logMessage("🔄 Registrazione fermata dal sistema");
+        Log.d(TAG, "AudioRecorder fermato dal sistema");
     }
 
     @Override
     public void onSilenceDetected() {
-        // ✅ NUOVO: Gestione intelligente del silenzio
-        consecutiveSilenceCount++;
-
-        // Se abbiamo troppo silenzio consecutivo, suggerisci una pulizia del buffer
-        if (consecutiveSilenceCount >= MAX_CONSECUTIVE_SILENCE && keywordClassifier != null) {
-            int bufferSize = keywordClassifier.getBufferSize();
-            if (bufferSize > keywordClassifier.getInputSize() * 2) {
-                keywordClassifier.forceBufferCleanup();
-                Log.d(TAG, "Pulizia buffer forzata dopo silenzio prolungato");
-            }
-        }
-
-        // Log occasionale per debug (ogni 5 secondi di silenzio)
-        if (consecutiveSilenceCount % 5 == 0) {
-            Log.v(TAG, "Silenzio prolungato: " + consecutiveSilenceCount + " secondi");
-        }
+        // Log del silenzio solo per debug verbose
+        Log.v(TAG, "Silenzio rilevato");
     }
 
     @Override
     public void onSpeechDetected() {
-        // ✅ NUOVO: Reset del contatore silenzio quando rileva parlato
-        consecutiveSilenceCount = 0;
-
         logMessage("🗣️ Parlato rilevato - Elaborazione in corso...");
-
-        // ✅ NUOVO: Log dimensione buffer per debug
-        if (keywordClassifier != null) {
-            int bufferSize = keywordClassifier.getBufferSize();
-            Log.d(TAG, "Parlato rilevato - Buffer size: " + bufferSize);
-        }
+        Log.d(TAG, "Speech rilevato");
     }
 
     @Override
     public void onError(String error) {
         logMessage("❌ Errore AudioRecorder: " + error);
-        Log.e(TAG, "Errore audio: " + error);
+        Log.e(TAG, "Errore AudioRecorder: " + error);
 
-        // In caso di errore, pulisci il buffer per evitare stati inconsistenti
-        if (keywordClassifier != null) {
-            keywordClassifier.clearBuffer();
-            logMessage("🧹 Buffer audio pulito dopo errore");
+        // In caso di errore, ferma la registrazione
+        if (isRecording) {
+            stopRecording();
         }
     }
 
@@ -283,13 +250,14 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
 
     private void processAudioData(short[] rawAudioData) {
         try {
-            // ✅ NUOVO: Log periodico delle dimensioni buffer per debug
-            if (totalClassifications % 10 == 0 && keywordClassifier != null) {
-                int bufferSize = keywordClassifier.getBufferSize();
-                Log.d(TAG, "Classificazione #" + totalClassifications + " - Buffer: " + bufferSize + "/" + keywordClassifier.getInputSize());
+            if (rawAudioData == null || rawAudioData.length == 0) {
+                Log.w(TAG, "Dati audio vuoti ricevuti");
+                return;
             }
 
-            // 1. Preprocessa l'audio (normalizzazione, filtri, etc.)
+            Log.v(TAG, "Elaborazione audio: " + rawAudioData.length + " campioni");
+
+            // 1. Preprocessa l'audio (normalizzazione di base)
             float[] processedAudio = audioPreprocessor.preprocessAudio(rawAudioData);
 
             if (processedAudio == null) {
@@ -306,38 +274,29 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
                 return;
             }
 
-            // 3. ✅ MIGLIORAMENTO: Verifica che il buffer del classifier sia in uno stato valido
-            if (keywordClassifier.getBufferSize() > keywordClassifier.getInputSize() * 5) {
-                Log.w(TAG, "Buffer troppo grande, forzando pulizia prima della classificazione");
-                keywordClassifier.forceBufferCleanup();
+            // 3. Valida i dati audio prima della classificazione
+            if (!keywordClassifier.validateAudioData(processedAudio)) {
+                logMessage("⚠️ Dati audio non validi per la classificazione");
+                return;
             }
 
-            // 4. Classifica l'audio - ora il buffer è gestito in modo più intelligente
+            // 4. Classifica l'audio
             totalClassifications++;
             String result = keywordClassifier.classify(processedAudio);
 
             if (result != null && !result.isEmpty()) {
                 handleClassificationResult(result);
             } else {
-                // ✅ MIGLIORAMENTO: Log più informativo quando non riconosce comandi
-                int bufferSize = keywordClassifier.getBufferSize();
-                Log.d(TAG, "Classificazione #" + totalClassifications + " - Nessun comando riconosciuto (buffer: " + bufferSize + ")");
-
                 // Log occasionale per l'utente
-                if (totalClassifications % 5 == 0) {
+                if (totalClassifications % 3 == 0) {
                     logMessage("🔍 Analizzando audio... (tentativo " + totalClassifications + ")");
                 }
+                Log.d(TAG, "Classificazione #" + totalClassifications + " - Nessun comando riconosciuto");
             }
 
         } catch (Exception e) {
             logMessage("❌ Errore elaborazione audio: " + e.getMessage());
             Log.e(TAG, "Errore elaborazione audio", e);
-
-            // In caso di errore durante l'elaborazione, pulisci il buffer
-            if (keywordClassifier != null) {
-                keywordClassifier.clearBuffer();
-                Log.d(TAG, "Buffer pulito dopo errore elaborazione");
-            }
         }
     }
 
@@ -346,7 +305,15 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
             // Estrae il comando e la confidenza dal risultato
             String[] parts = result.split("[()%]");
             String command = parts[0].trim();
-            float confidence = parts.length > 1 ? Float.parseFloat(parts[1].trim().replace(',', '.')) : 0f;
+            float confidence = 0f;
+
+            if (parts.length > 1) {
+                try {
+                    confidence = Float.parseFloat(parts[1].trim().replace(',', '.'));
+                } catch (NumberFormatException e) {
+                    Log.w(TAG, "Errore parsing confidenza: " + parts[1]);
+                }
+            }
 
             // Verifica se è un comando supportato
             if (!ModelConfig.isCommandSupported(command)) {
@@ -354,7 +321,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
                 return;
             }
 
-            // ✅ MIGLIORAMENTO: Evita duplicati con soglia dinamica basata sulla confidenza
+            // Evita duplicati con soglia dinamica basata sulla confidenza
             long currentTime = System.currentTimeMillis();
             long timeSinceLastCommand = currentTime - lastCommandTime;
 
@@ -379,15 +346,9 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
             logMessage("   📝 " + description);
             logMessage("   🎯 Confidenza: " + String.format("%.1f%%", confidence));
 
-            // ✅ NUOVO: Log buffer size per debug
-            if (keywordClassifier != null) {
-                logMessage("   📊 Buffer: " + keywordClassifier.getBufferSize() + " campioni");
-            }
-
-            // Log per debug
             Log.i(TAG, "Comando riconosciuto: " + command + " (confidenza: " + confidence + "%)");
 
-            // Qui potresti aggiungere azioni specifiche per ogni comando
+            // Esegui azione associata al comando
             executeCommand(command, confidence);
 
         } catch (Exception e) {
@@ -397,9 +358,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
     }
 
     private void executeCommand(String command, float confidence) {
-        // Qui puoi implementare azioni specifiche per ogni comando
-        // Per ora solo logging, ma potresti controllare dispositivi, navigazione, etc.
-
+        // Implementa azioni specifiche per ogni comando
         switch (command.toLowerCase()) {
             case "yes":
                 logMessage("   ➡️ Azione: Conferma affermativa");
@@ -442,23 +401,12 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
     public void stopListening() {
         if (audioRecorder != null && isRecording) {
             stopRecording();
-            // Il buffer viene automaticamente svuotato nel callback onRecordingStopped
-        }
-    }
-
-    // ✅ NUOVO: Metodo per debug del buffer
-    public void logBufferStatus() {
-        if (keywordClassifier != null) {
-            int bufferSize = keywordClassifier.getBufferSize();
-            int inputSize = keywordClassifier.getInputSize();
-            float usage = (float) bufferSize / inputSize * 100f;
-            logMessage("📊 Buffer Status: " + bufferSize + "/" + inputSize + " (" + String.format("%.1f%%)", usage));
         }
     }
 
     // ========== UTILITY ==========
 
-    public void logMessage(String message) {
+    private void logMessage(String message) {
         runOnUiThread(() -> {
             String timestamp = java.text.DateFormat.getTimeInstance().format(new java.util.Date());
             String logEntry = "[" + timestamp + "] " + message + "\n";
@@ -481,15 +429,18 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
         // Rilascia le risorse
         if (audioRecorder != null) {
             audioRecorder.release();
+            audioRecorder = null;
         }
 
         if (keywordClassifier != null) {
-            keywordClassifier.close(); // Questo ferma anche il timer di pulizia automatica
+            keywordClassifier.close();
+            keywordClassifier = null;
         }
 
-        // ✅ NUOVO: Cleanup handler
+        // Cleanup handler
         if (audioProcessingHandler != null) {
             audioProcessingHandler.removeCallbacksAndMessages(null);
+            audioProcessingHandler = null;
         }
 
         logMessage("🔄 Risorse rilasciate");
@@ -500,6 +451,7 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
         super.onPause();
         // Ferma la registrazione quando l'app va in background
         if (isRecording) {
+            logMessage("⏸️ App in background - Registrazione fermata");
             stopRecording();
         }
     }
@@ -507,9 +459,6 @@ public class MainActivity extends AppCompatActivity implements AudioRecorder.Aud
     @Override
     protected void onResume() {
         super.onResume();
-        // ✅ NUOVO: Log dello stato quando l'app torna in foreground
-        if (keywordClassifier != null) {
-            Log.d(TAG, "App resumed - Buffer size: " + keywordClassifier.getBufferSize());
-        }
+        Log.d(TAG, "App resumed");
     }
 }
