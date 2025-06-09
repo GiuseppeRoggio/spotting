@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Stato premuto -->
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#d32f2f" />
+            <corners android:radius="8dp" />
+            <stroke android:width="2dp" android:color="#b71c1c" />
+        </shape>
+    </item>
+
+    <!-- Stato normale -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#f44336" />
+            <corners android:radius="8dp" />
+            <stroke android:width="2dp" android:color="#d32f2f" />
+        </shape>
+    </item>
+
+</selector>
